@@ -1,0 +1,242 @@
+<!DOCTYPE HTML>
+<html>
+<head><meta name="generator" content="Hexo 3.8.0">
+  <meta charset="utf-8">
+  
+  <title>An unified array interface | Winter&#39;s Land</title>
+  <meta name="author" content="winter">
+  
+  <meta name="description" content="Recently I’m trying to merge some array code from my research project stdio to primitive, one of the core haskell libraries. I hope the reviewing process can be finished soon so that people can start using it. This post is a summary on current GHC array support(up to 8.2.1, things may changed when you read it), and what my patch is about.">
+  
+  
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+
+  <meta property="og:title" content="An unified array interface">
+  <meta property="og:site_name" content="Winter&#39;s Land">
+
+  
+    <meta property="og:image" content="">
+  
+  
+  <link href="/favicon.ico" rel="icon" type="image/x-ico">
+  <link rel="canonical" href="http://winterland.me/2017/08/18/an-unified-array-interface/index.html">
+  <link rel="alternate" href="/atom.xml" title="Winter&#39;s Land" type="application/atom+xml">
+  
+  <link rel="stylesheet" href="/css/style.css" media="screen" type="text/css">
+  <!--[if lt IE 9]><script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script><![endif]-->
+  
+<script type="text/javascript">
+  var _gaq = _gaq || [];
+  _gaq.push(['_setAccount', 'UA-45991394-1']);
+  _gaq.push(['_trackPageview']);
+
+  (function() {
+    var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+    ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
+    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+  })();
+</script>
+
+</head>
+</html>
+
+<body>
+  <header id="header" class="inner"><div class="blog-header">
+  <h1><a href="/">Winter&#39;s Land</a></h1>
+  <h2><a href="/">有朋自远方来，不亦乐乎</a></h2>
+</div>
+<nav id="main-nav" class="blog-nav">
+  <ul>
+    
+      <li><a href="/">首页/Home</a></li>
+    
+      <li><a href="/archives">归档/Archives</a></li>
+    
+      <li><a href="/about">关于/About</a></li>
+    
+  </ul>
+  <div class="clearfix"></div>
+</nav>
+<div class="clearfix"></div>
+</header>
+  <div id="content" class="inner">
+    
+      <div id="main-col" class="alignleft"><div id="wrapper"><article class="post">
+  
+    <div class="gallery">
+  <div class="photoset">
+    
+      <img src="">
+    
+  </div>
+  <div class="control">
+    <div class="prev"></div>
+    <div class="next"></div>
+  </div>
+</div>
+  
+  <div class="post-content">
+    <header>
+      
+        <div class="icon"></div>
+        <time datetime="2017-08-18T05:54:00.000Z"><a href="/2017/08/18/an-unified-array-interface/">2017-08-18</a></time>
+      
+      
+  
+    <h1 class="title">An unified array interface</h1>
+  
+
+    </header>
+    <div class="entry">
+      
+        <p>Recently I’m trying to merge <a href="https://github.com/haskell/primitive/pull/64" target="_blank" rel="noopener">some array code</a> from my research project <a href="https://github.com/winterland1989/stdio" target="_blank" rel="noopener">stdio</a> to <a href="https://github.com/haskell/primitive" target="_blank" rel="noopener">primitive</a>, one of the core haskell libraries. I hope the reviewing process can be finished soon so that people can start using it. This post is a summary on current GHC array support(up to 8.2.1, things may changed when you read it), and what my patch is about. </p>
+<a id="more"></a> 
+<h2 id="boxed-unboxed-lifted-unlifted"><a href="#boxed-unboxed-lifted-unlifted" class="headerlink" title="boxed, unboxed, lifted, unlifted"></a>boxed, unboxed, lifted, unlifted</h2><p>For many haskellers, using arrays may be the first time one wants to know what’s the difference between boxed, unboxed, lifted, unlifted types. Let’s spend some time explaining these buzzwords.</p>
+<p>In other languages, you often have to distinguish <em>reference</em> and <em>value</em>. For example, in C pointers are references to other objects. It’s a memory location in hardware sense: you can use machine code to follow a reference to the memory it pointing to. While the other non-pointer types value are not memory locations, their 1-0 arrangement stands for a certain value of that type.</p>
+<p>In haskell almost every value you see is a pointer in C sense, i.e. a memory location point to a heap object, for example a data type like:</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">data Foo = Foo Int Char</span><br><span class="line"></span><br><span class="line">foo = Foo 3 &apos;a&apos;</span><br></pre></td></tr></table></figure>
+<p>Are represented as:</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line">    foo(maybe on stack, maybe on register, maybe inside other boxes)</span><br><span class="line">     |</span><br><span class="line">     V</span><br><span class="line">+----+--------+---+---+    +-------------+------+</span><br><span class="line">| info-table* | * | * +---&gt;+ info-table* | &apos;a&apos;# |</span><br><span class="line">+-------------+-+-+---+    +-------------+------+</span><br><span class="line"> This is Foo    |          This is C# (Char&apos;s constructor)</span><br><span class="line">                V</span><br><span class="line">            +---+---------+----+</span><br><span class="line">            | info-table* | 3# |</span><br><span class="line">            +-------------+----+</span><br><span class="line">             This is I# (Int&apos;s constructor)</span><br></pre></td></tr></table></figure>
+<p>During runtime the value <code>foo</code> is just a pointer, and all the operations, e.g. pattern match, is going through dereferencing. Values like this are called <em>boxed</em> because it’s a pointer to a box, i.e. heap objects with info-table. The info-table contains many useful infomation about the box, such as how many words the boxed occupied, which constructor the box stand for, etc.</p>
+<p>The <code>3#</code> and <code>&#39;a&#39;#</code> above are haskell’s non-pointer value, we call values like this <em>unboxed</em> values. Unboxed values don’t have info-tables, so we really can’t have them directly on heap: otherwise the GC would get confused when it scans them, without infomation from info-table, it can’t decide how many bytes to copy. These values are only belong to boxes, registers or stacks: we generate machine code to manipulate them directly.</p>
+<p>Another difference, unlifted and lifted, exists because in haskell we have non-strict evaluation mechanism, for example a value <code>1 + 2</code> may have a representation like:</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">+-------------+----------+---+    +-------------+----+</span><br><span class="line">| info-table* | reserved | * +---&gt;+ info-table* | 2# |</span><br><span class="line">+-------------+----------+---+    +-------------+----+</span><br><span class="line">                                  This is I#</span><br><span class="line"></span><br><span class="line"> The info-table points to (+1) code.</span><br></pre></td></tr></table></figure>
+<p>As you can see, <code>1 + 2</code> and <code>3</code> are both references, they can be used interchangeably: a function expecting an <code>Int</code> argument can accept both pointers. This is done by <em>entering</em> the heap objects. i.e. execute the entry code following the info-table. The entry code for constructors are simply returns, since they’re already evaluated. For thunks the code will do evaluation and the <code>reserved</code> word above is reserved exactly for evaluation result, by writing a forward pointer and change the thunk box into an indirection box.</p>
+<p>But the evaluation may fail(diverged recursion, stackoverflow, etc.), then the pointer will point to an undefined value, this kind of things are called <em>bottom</em> in haskell, written as <code>_|_</code>. The intuition for this name is that all the other evaluated values have certain meaning, but bottom doesn’t, it sits lower in the spectrum of determinism, concreteness, usefulness … whatever suits your mind. Hence comes the concept of <code>lifted</code> type, i.e. types which contain <code>bottom</code> values, or more formly, inhabited by <code>_|_</code>.</p>
+<p>As you expected, most of the boxed type can be inhabited by <code>_|_</code>, the thunk may explode and terminate your program, just think about <code>error &quot;!&quot;</code> or <code>undefined</code> in base. What about unboxed types then? Can <code>Int#</code> stand for an undefined value? No, it’s impossible! All the 1-0 arrangements represent a <code>Int#</code>, there’s no way we get a bottom from it. </p>
+<h2 id="boxed-arrays"><a href="#boxed-arrays" class="headerlink" title="boxed arrays"></a>boxed arrays</h2><p>Now let’s consider GHC arrays, they’re special heap objects provided by RTS. We have boxed arrays <code>MutableArray#</code> and <code>Array#</code>, they are called boxed arrays because they store references to boxes:</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line">+-------------+--------------+---------------------------+---+-...-+---+---+------------+</span><br><span class="line">| info-table* | payload size | payload + card-table size | * | ... | * | * | card table |</span><br><span class="line">+-------------+--------------+---------------------------+-+-+-...-+---+---+------------+</span><br><span class="line"> MutableArray#                                             |</span><br><span class="line">                                                           V</span><br><span class="line">                                                    +------+------+-----+</span><br><span class="line">                                                    | info-table* | ... |                                                        </span><br><span class="line">                                                    +-------------+-----+</span><br><span class="line">                                                      Boxes, maybe a thunk</span><br><span class="line">                                                      boxed array are lazy on its element</span><br></pre></td></tr></table></figure>
+<p>It looks quite complicated, mainly because we want to optimize the GC for arrays:</p>
+<ul>
+<li><p><code>MutableArray#</code> can have different info-table pointers during its life time, but we never enter them. The difference between these info-tables is the type field. e.g. a <code>MutableArray#</code> on old generation heap may have <code>MUT_ARR_PTRS_CLEAN</code> type which is saying this array have not been mutated since last GC, so if this is a minor GC we can safely skip it.</p>
+</li>
+<li><p><code>MutableArray#</code> have a card table which is just an byte map, recording which part of payload is mutated after last GC, a none-zero byte in card table indicate corresponding payload area(in GHC it’s 128 elements) contain mutated pointers, so that GC will trace them. </p>
+</li>
+</ul>
+<p><code>MutableArray#</code>s are always kept in a generation’s mutable list once it’s promoted to that generation, so these optimizations are important if you keep a large mutable array on heap for a long time. For arrays smaller than 128, it’s unnecessary to use a card-table, so we also have <code>MutableSmallArray#</code> for that purpose.</p>
+<p>In GHC we usually turn <code>MutableArray#</code> into a <code>Array#</code> with freeze operations after creation is completely. We changed the info-table(so its type) to <code>stg_SMALL_MUT_ARR_PTRS_FROZEN0</code>, then(after a GC) to <code>stg_SMALL_MUT_ARR_PTRS_FROZEN</code>, so that minor GC will not scan it anymore. But the card-table’s space is still there in case we thaw the array in place again. Generally speaking, under creation-freeze pattern, <code>MutableSmallArray#</code> and <code>SmallArray#</code> are more recommended since you won’t keep the mutable one on heap for too long.</p>
+<h2 id="boxed-unlifted-type"><a href="#boxed-unlifted-type" class="headerlink" title="boxed, unlifted type"></a>boxed, unlifted type</h2><p><code>ghc-prim</code> also provide <code>MutableArrayArray#</code> and <code>ArrayArray#</code> array type, you can use them to store boxed unlifted values, a boxed unlifted value? Yeah you hear it right, there’re certain kind of values, which are pointers pointing to boxes, but them self can never be bottom. It turned out <code>MutableArray#</code> and <code>Array#</code> are exactly this type of thing. It’s easy to tell they’re boxed value because they point to boxes we draw above, but why they’re unlifted?</p>
+<p><code>MutableArray#/Array#</code> are unlifted because <strong>they can’t be obtained directly by thunk evaluation</strong>, there’re simply no ways to create a thunk which evaluates to <code>MutableArray#</code> or <code>Array#</code>, you can only create them using primitive operations provided by RTS, and RTS never produce them lazily(actually that may be possible, i.e. allocating array when we enter them, but doing that will complicate things).</p>
+<p>What you can do is to wrap the pointer itself inside another box, i.e. <code>data Array = Array Array#</code>, and wrap the primitive operations so that an <code>Array</code> works like all the other haskell lazy boxed types, this is actually just creating another layer indirection. Now let’s say you want an array of arrays, <code>Array Array</code> is definitely not optimal: every element of the array points to a <code>Array</code> box, and inside the <code>Array</code> box we have a <code>Array#</code><br>points to the real array. The indirection is absolutely wasteful if we don’t need lazy on the element arrays.</p>
+<p>So here come <code>ArrayArray#</code>, It’s actually just <code>Array#</code> s, but we use it to save the <code>Array#</code> pointers instead of <code>Array</code> pointers, thus save an unnecessary indirection. And we can be sure the element are all evaluated, because <code>Array#</code> are unlifted type, which can’t be a thunk.</p>
+<p>In <code>primitive</code> package @dolio push this technique to its limit: we use <code>ArrayArray#</code> to store all the boxed unlifted types, such as <code>MutVar#</code> or <code>ArrayArray#</code> itself. And in my patch i extend this support to <code>MVar#</code> and <code>TVar#</code>.</p>
+<h2 id="byte-arrays"><a href="#byte-arrays" class="headerlink" title="byte arrays"></a>byte arrays</h2><p>The heap object layout of <code>MutableByteArray#</code>, <code>ByteArray#</code> are simpler, since they don’t contain pointers, we don’t have to trace them during GC:</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">+-------------+--------------+-------------+---+-...-+---+---+</span><br><span class="line">| info-table* | payload size | 0x00000000# | # | ... | # | # |</span><br><span class="line">+-------------+--------------+-------------+---+-...-+---+---+</span><br><span class="line"> MutableByteArray#/ByteArray#</span><br></pre></td></tr></table></figure>
+<p>In fact we only have one single info-table for both <code>MutableByteArray#</code> and <code>ByteArray#</code>, thus unlike boxed arrays, freezing and thawing between them in place are just no-ops. Byte array can be used to encode different size non-pointer data, such as <code>Int</code> and <code>Word8</code>, <code>ghc-prim</code> provide seperated functions to work with different data types: <code>indexIntArray#</code>, <code>indexWord8Array#</code>, etc. In <code>primitive</code>, the <code>ByteArray</code> type is also accompanied with all these operations. </p>
+<p>My patch add a tagged version of byte array:</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">data MutablePrimArray a = MutablePrimArray MutableByteArray#</span><br><span class="line">data PrimArray a = PrimArray ByteArray#</span><br></pre></td></tr></table></figure>
+<p>Here <code>a</code> can be <code>Int</code>, <code>Word8</code>, etc. They are just instances of <code>Prim</code> class in primitive since a long time ago. The tagged version byte array makes polymorphric unboxed array possible, later it’s unified again with another level of abstraction.</p>
+<p>Using byte array with different size of <code>Prim</code> instances requires user to watch out alignment, GHC RTS allocate byte arrays aligned to machine word, this is sufficient for all the built-in <code>Prim</code> instances, but in case of a special alignment requirement, you have to use <code>newAlignedPinnedByteArray#</code> primitive operations which do aligned allocation.</p>
+<p>You may wonder what’s the <code>pinned</code> fuzz about. There’re two kind of byte arrays, the one which can be moved by GC, and the one which can not. This difference arise when we want to interface foreign code: once we pass a byte array a foreign function call, we don’t want it get moved by GC while the foreign function is still doing work on it, so we want to allocate a <em>pinned</em> byte array to do the job. </p>
+<p>Allocating pinned byte array are not happening on capability’s nursery, it’s happening on a global pinned object heap. It’s more like a traditional <code>malloc</code>. It can be slower to collect, and the allocation may suffer from contentions since we need to aquire a global lock during allocating.</p>
+<p>Even though it’s slower, we still want to allocate large byte array on that global pinned object heap, we gain performance elsewhere: the GC will not move it. In GHC there’s a limit(<code>LARGE_OBJECT_THRESHOLD</code>, a little bit smaller than 4K block size), once you are allocating byte array large than that, it will be allocated on pinned heap.</p>
+<p>After <a href="https://ghc.haskell.org/trac/ghc/ticket/8281" target="_blank" rel="noopener">#8281</a> is resolved, we now have a guarantee that during unsafe FFI, the GC won’t happen. Thus it’s safe to pass byte array to an unsafe FFI call(This actually also hold for older GHC, but not for older GHCi). Otherwise you have to ask if a byte array is pinned and create a pinned copy if necessary, new <code>ghc-prim</code> provides <code>isMutableByteArrayPinned#/isByteArrayPinned#</code>, but on older GHC you can easily get this infomation by asking the byte array’s block descriptor flag:</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">int hsprimitive_is_byte_array_pinned(void* p)&#123;</span><br><span class="line">    return Bdescr((StgPtr)p)-&gt;flags &amp; (BF_PINNED | BF_LARGE);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+<h2 id="unified-array-interface"><a href="#unified-array-interface" class="headerlink" title="unified array interface"></a>unified array interface</h2><p>Together with <code>PrimArray a</code>, my patch also add a <code>Arr</code> class:</p>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br><span class="line">48</span><br><span class="line">49</span><br><span class="line">50</span><br><span class="line">51</span><br></pre></td><td class="code"><pre><span class="line"><span class="class"><span class="keyword">class</span> <span class="type">Arr</span> (<span class="title">marr</span> :: * -&gt; * -&gt; *) (<span class="title">arr</span> :: * -&gt; * ) a | arr -&gt; marr, marr -&gt; arr <span class="keyword">where</span></span></span><br><span class="line">    <span class="comment">-- | Make a new array with given size.</span></span><br><span class="line">    newArr :: (<span class="type">PrimMonad</span> m, <span class="type">PrimState</span> m ~ s) =&gt; <span class="type">Int</span> -&gt; m (marr s a)</span><br><span class="line">    <span class="comment">-- | Make a new array and fill it with an initial value.</span></span><br><span class="line">    newArrWith :: (<span class="type">PrimMonad</span> m, <span class="type">PrimState</span> m ~ s) =&gt; <span class="type">Int</span> -&gt; a -&gt; m (marr s a)</span><br><span class="line">    <span class="comment">-- | Index mutable array in a primitive monad.</span></span><br><span class="line">    readArr :: (<span class="type">PrimMonad</span> m, <span class="type">PrimState</span> m ~ s) =&gt; marr s a -&gt; <span class="type">Int</span> -&gt; m a</span><br><span class="line">    <span class="comment">-- | Write mutable array in a primitive monad.</span></span><br><span class="line">    writeArr :: (<span class="type">PrimMonad</span> m, <span class="type">PrimState</span> m ~ s) =&gt; marr s a -&gt; <span class="type">Int</span> -&gt; a -&gt; m ()</span><br><span class="line">    <span class="comment">-- | Fill mutable array with a given value.</span></span><br><span class="line">    setArr :: (<span class="type">PrimMonad</span> m, <span class="type">PrimState</span> m ~ s) =&gt; marr s a -&gt; <span class="type">Int</span> -&gt; <span class="type">Int</span> -&gt; a -&gt; m ()</span><br><span class="line">    <span class="comment">-- | Index immutable array, which is a pure operation,</span></span><br><span class="line">    indexArr :: arr a -&gt; <span class="type">Int</span> -&gt; a</span><br><span class="line">    <span class="comment">-- | Index immutable array in a primitive monad, this helps in situations that</span></span><br><span class="line">    <span class="comment">-- you want your indexing result is not a thunk referencing whole array.</span></span><br><span class="line">    indexArrM :: (<span class="type">Monad</span> m) =&gt; arr a -&gt; <span class="type">Int</span> -&gt; m a</span><br><span class="line">    <span class="comment">-- | Safely freeze mutable array by make a immutable copy of its slice.</span></span><br><span class="line">    freezeArr :: (<span class="type">PrimMonad</span> m, <span class="type">PrimState</span> m ~ s) =&gt; marr s a -&gt; <span class="type">Int</span> -&gt; <span class="type">Int</span> -&gt; m (arr a)</span><br><span class="line">    <span class="comment">-- | Safely thaw immutable array by make a mutable copy of its slice.</span></span><br><span class="line">    thawArr :: (<span class="type">PrimMonad</span> m, <span class="type">PrimState</span> m ~ s) =&gt; arr a -&gt; <span class="type">Int</span> -&gt; <span class="type">Int</span> -&gt; m (marr s a)</span><br><span class="line">    <span class="comment">-- | In place freeze a mutable array, the original mutable array can not be used</span></span><br><span class="line">    <span class="comment">-- anymore.</span></span><br><span class="line">    unsafeFreezeArr :: (<span class="type">PrimMonad</span> m, <span class="type">PrimState</span> m ~ s) =&gt; marr s a -&gt; m (arr a)</span><br><span class="line">    <span class="comment">-- | In place thaw a immutable array, the original immutable array can not be used</span></span><br><span class="line">    <span class="comment">-- anymore.</span></span><br><span class="line">    unsafeThawArr :: (<span class="type">PrimMonad</span> m, <span class="type">PrimState</span> m ~ s) =&gt; arr a -&gt; m (marr s a)</span><br><span class="line">    <span class="comment">-- | Copy a slice of immutable array to mutable array at given offset.</span></span><br><span class="line">    copyArr ::  (<span class="type">PrimMonad</span> m, <span class="type">PrimState</span> m ~ s) =&gt; marr s a -&gt; <span class="type">Int</span> -&gt; arr a -&gt; <span class="type">Int</span> -&gt; <span class="type">Int</span> -&gt; m ()</span><br><span class="line">    <span class="comment">-- | Copy a slice of mutable array to mutable array at given offset.</span></span><br><span class="line">    <span class="comment">-- The two mutable arrays shall no be the same one.</span></span><br><span class="line">    copyMutableArr :: (<span class="type">PrimMonad</span> m, <span class="type">PrimState</span> m ~ s) =&gt; marr s a -&gt; <span class="type">Int</span> -&gt; marr s a -&gt; <span class="type">Int</span> -&gt; <span class="type">Int</span> -&gt; m ()</span><br><span class="line">    <span class="comment">-- | Copy a slice of mutable array to mutable array at given offset.</span></span><br><span class="line">    <span class="comment">-- The two mutable arrays may be the same one.</span></span><br><span class="line">    moveArr :: (<span class="type">PrimMonad</span> m, <span class="type">PrimState</span> m ~ s) =&gt; marr s a -&gt; <span class="type">Int</span> -&gt; marr s a -&gt; <span class="type">Int</span> -&gt; <span class="type">Int</span> -&gt; m ()</span><br><span class="line">    <span class="comment">-- | Create immutable copy.</span></span><br><span class="line">    cloneArr :: arr a -&gt; <span class="type">Int</span> -&gt; <span class="type">Int</span> -&gt; arr a</span><br><span class="line">    <span class="comment">-- | Create mutable copy.</span></span><br><span class="line">    cloneMutableArr :: (<span class="type">PrimMonad</span> m, <span class="type">PrimState</span> m ~ s) =&gt; marr s a -&gt; <span class="type">Int</span> -&gt; <span class="type">Int</span> -&gt; m (marr s a)</span><br><span class="line">    <span class="comment">-- | Resize mutable array to given size.</span></span><br><span class="line">    resizeMutableArr :: (<span class="type">PrimMonad</span> m, <span class="type">PrimState</span> m ~ s) =&gt; marr s a -&gt; <span class="type">Int</span> -&gt; m (marr s a)</span><br><span class="line">    <span class="comment">-- | Shrink mutable array to given size. This operation only works on primitive arrays.</span></span><br><span class="line">    <span class="comment">-- For boxed array, this is a no-op, e.g. 'sizeOfMutableArr' will not change.</span></span><br><span class="line">    shrinkMutableArr :: (<span class="type">PrimMonad</span> m, <span class="type">PrimState</span> m ~ s) =&gt; marr s a -&gt; <span class="type">Int</span> -&gt; m ()</span><br><span class="line">    <span class="comment">-- | Is two mutable array are reference equal.</span></span><br><span class="line">    sameMutableArr :: marr s a -&gt; marr s a -&gt; <span class="type">Bool</span></span><br><span class="line">    <span class="comment">-- | Size of immutable array.</span></span><br><span class="line">    sizeofArr :: arr a -&gt; <span class="type">Int</span></span><br><span class="line">    <span class="comment">-- | Size of mutable array.</span></span><br><span class="line">    sizeofMutableArr :: (<span class="type">PrimMonad</span> m, <span class="type">PrimState</span> m ~ s) =&gt; marr s a -&gt; m <span class="type">Int</span></span><br><span class="line">    <span class="comment">-- | Is two immutable array are referencing the same one.</span></span><br><span class="line">    sameArr :: arr a -&gt; arr a -&gt; <span class="type">Bool</span></span><br></pre></td></tr></table></figure>
+<p>This is a type class trying to unify RTS’s array interface, e.g. the <code>Data.Primitive.XXXArray</code> modules, it’s a multi-parameter class constraining both immutable and mutable array types. For example we have following instances:</p>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="class"><span class="keyword">instance</span> <span class="type">Arr</span> <span class="type">MutableArray</span> <span class="type">Array</span> a <span class="keyword">where</span></span></span><br><span class="line"><span class="class"><span class="keyword">instance</span> <span class="type">Arr</span> <span class="type">SmallMutableArray</span> <span class="type">SmallArray</span> a <span class="keyword">where</span></span></span><br><span class="line"><span class="class"><span class="keyword">instance</span> <span class="type">Prim</span> a =&gt; <span class="type">Arr</span> <span class="type">MutablePrimArray</span> <span class="type">PrimArray</span> a <span class="keyword">where</span></span></span><br><span class="line"><span class="class"><span class="keyword">instance</span> <span class="type">PrimUnlifted</span> a =&gt; <span class="type">Arr</span> <span class="type">MutableUnliftedArray</span> <span class="type">UnliftedArray</span> a <span class="keyword">where</span></span></span><br></pre></td></tr></table></figure>
+<p><code>Arr</code> class uses functional dependencies to force a one-to-one immutable/mutable constraint, which is useful since many operations under <code>Arr</code> only mention either the immutable array type, or the mutable one.</p>
+<p>This class is useful in many ways, for example, array slices can be defined as:</p>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">-- | Typeclass for box and unboxed vectors, which are created by slicing arrays.</span></span><br><span class="line"><span class="comment">--</span></span><br><span class="line"><span class="class"><span class="keyword">class</span> (<span class="type">Arr</span> (<span class="type">MArray</span> <span class="title">v</span>) (<span class="type">IArray</span> <span class="title">v</span>) a) =&gt; <span class="type">Vec</span> v a <span class="keyword">where</span></span></span><br><span class="line">    <span class="comment">-- | Vector's mutable array type</span></span><br><span class="line">    <span class="class"><span class="keyword">type</span> <span class="type">MArray</span> v :: * -&gt; * -&gt; *</span></span><br><span class="line">    <span class="comment">-- | Vector's immutable array type</span></span><br><span class="line">    <span class="class"><span class="keyword">type</span> <span class="type">IArray</span> v :: * -&gt; *</span></span><br><span class="line">    <span class="comment">-- | Get underline array and slice range(offset and length).</span></span><br><span class="line">    toArr :: v a -&gt; (<span class="type">IArray</span> v a, <span class="type">Int</span>, <span class="type">Int</span>)</span><br><span class="line">    <span class="comment">-- | Create a vector by slicing an array(with offset and length).</span></span><br><span class="line">    fromArr :: <span class="type">IArray</span> v a -&gt; <span class="type">Int</span> -&gt; <span class="type">Int</span> -&gt; v a</span><br></pre></td></tr></table></figure>
+<p>We can provide generic operations without considering which underlined array type is, e.g. a <code>foldr/build</code> awared packing function from <a href="https://github.com/winterland1989/stdio" target="_blank" rel="noopener">stdio</a>:</p>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">-- | /O(n)/ Convert a list into a vector with an approximate size.</span></span><br><span class="line"><span class="comment">--</span></span><br><span class="line"><span class="comment">-- If the list's length is large than the size given, we simply double the buffer size</span></span><br><span class="line"><span class="comment">-- and continue building.</span></span><br><span class="line"><span class="comment">--</span></span><br><span class="line"><span class="comment">-- This function is a /good consumer/ in the sense of build/foldr fusion.</span></span><br><span class="line"><span class="comment">--</span></span><br><span class="line"><span class="title">packN</span> :: <span class="keyword">forall</span> v a. <span class="type">Vec</span> v a =&gt; <span class="type">Int</span> -&gt; [a] -&gt; v a</span><br><span class="line"><span class="meta">&#123;-# INLINE packN #-&#125;</span></span><br><span class="line"><span class="title">packN</span> n0 = \ ws0 -&gt; runST (<span class="keyword">do</span> <span class="keyword">let</span> n = max <span class="number">4</span> n0</span><br><span class="line">                              mba &lt;- newArr n</span><br><span class="line">                              (<span class="type">IPair</span> i mba') &lt;- foldlM go (<span class="type">IPair</span> <span class="number">0</span> mba) ws0</span><br><span class="line">                              shrinkMutableArr mba' i</span><br><span class="line">                              ba &lt;- unsafeFreezeArr mba'</span><br><span class="line">                              return $! fromArr ba <span class="number">0</span> i</span><br><span class="line">                          )</span><br><span class="line">  <span class="keyword">where</span></span><br><span class="line">    <span class="comment">-- It's critical that this function get specialized and unboxed</span></span><br><span class="line">    <span class="comment">-- Keep an eye on its core!</span></span><br><span class="line">    go :: <span class="type">IPair</span> (<span class="type">MArray</span> v s a) -&gt; a -&gt; <span class="type">ST</span> s (<span class="type">IPair</span> (<span class="type">MArray</span> v s a))</span><br><span class="line">    go (<span class="type">IPair</span> i mba) x = <span class="keyword">do</span></span><br><span class="line">        n &lt;- sizeofMutableArr mba</span><br><span class="line">        <span class="keyword">if</span> i &lt; n</span><br><span class="line">        <span class="keyword">then</span> <span class="keyword">do</span> writeArr mba i x</span><br><span class="line">                return (<span class="type">IPair</span> (i+<span class="number">1</span>) mba)</span><br><span class="line">        <span class="keyword">else</span> <span class="keyword">do</span> <span class="keyword">let</span> !n' = n `shiftL` <span class="number">1</span></span><br><span class="line">                !mba' &lt;- resizeMutableArr mba n'</span><br><span class="line">                writeArr mba' i x</span><br><span class="line">                return (<span class="type">IPair</span> (i+<span class="number">1</span>) mba')</span><br><span class="line"></span><br><span class="line"><span class="class"><span class="keyword">data</span> <span class="type">IPair</span> a = <span class="type">IPair</span> <span class="meta">&#123;-# UNPACK #-&#125;</span>!<span class="type">Int</span> a</span></span><br></pre></td></tr></table></figure>
+<p>With <code>Arr</code> class, the array programming experience is improved to the “average” level, because in other languages you don’t have to use different functions with boxed and unbox array. Now you don’t have to do it in haskell either.</p>
+
+      
+    </div>
+    <footer>
+      
+        
+        
+          <script src="https://utteranc.es/client.js" repo="winterland1989/winterland1989.github.io" branch="master" issue-term="pathname" async>
+          </script>
+        
+      
+
+      <div class="clearfix"></div>
+    </footer>
+  </div>
+</article>
+</div></div>
+      <aside id="sidebar" class="alignright">
+  <div class="search">
+  <form action="//google.com/search" method="get" accept-charset="utf-8">
+    <input type="search" name="q" results="0" placeholder="Search">
+    <input type="hidden" name="q" value="site:winterland.me">
+  </form>
+</div>
+
+  
+<div class="widget tag">
+  <h3 class="title">Tags</h3>
+  <ul class="entry">
+  
+    <li><a href="/tags/haskell/">haskell</a><small>2</small></li>
+  
+  </ul>
+</div>
+
+
+</aside>
+    
+    <div class="clearfix"></div>
+  </div>
+  <footer id="footer" class="inner"><div class="aligncenter">
+  
+  &copy; 2019 winter
+  
+</div>
+<div class="clearfix"></div></footer>
+  <script src="http://cdn.staticfile.org/jquery/2.1.1-rc2/jquery.min.js"></script>
+<script src="/js/jquery.imagesloaded.min.js"></script>
+
+
+
+<div id="scroll2top">
+<img src="/scroll2top/arrow.png">
+</div>
+<script src="/scroll2top/scroll2top.min.js"></script>
+<div id="winterland">
+  <canvas></canvas>
+</div>
+<script src="/js/winterland.min.js"></script>
+<!-- mathjax config similar to math.stackexchange -->
+
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true
+    }
+  });
+</script>
+
+<script type="text/x-mathjax-config">
+    MathJax.Hub.Config({
+      tex2jax: {
+        skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+      }
+    });
+</script>
+
+<script type="text/x-mathjax-config">
+    MathJax.Hub.Queue(function() {
+        var all = MathJax.Hub.getAllJax(), i;
+        for(i=0; i < all.length; i += 1) {
+            all[i].SourceElement().parentNode.className += ' has-jax';
+        }
+    });
+</script>
+
+<script src="https://www.zybuluo.com/static/MathJax/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+
+
+  
+    <!-- Go to www.addthis.com/dashboard to customize your tools -->
+    <script type="text/javascript" src="//s7.addthis.com/js/300/addthis_widget.js#pubid=ra-59a3e3079f1b7ad5"></script> 
+  
+
+</body>
+</html>

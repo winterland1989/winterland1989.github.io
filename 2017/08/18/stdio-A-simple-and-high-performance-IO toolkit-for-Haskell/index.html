@@ -1,0 +1,250 @@
+<!DOCTYPE HTML>
+<html>
+<head><meta name="generator" content="Hexo 3.8.0">
+  <meta charset="utf-8">
+  
+  <title>stdio - A simple and high-performance IO toolkit for Haskell | Winter&#39;s Land</title>
+  <meta name="author" content="winter">
+  
+  <meta name="description" content="Yesterday I and my friend Tao He write a short release message at a local cafe, we released a new IO library for GHC based on our previous work on com">
+  
+  
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+
+  <meta property="og:title" content="stdio - A simple and high-performance IO toolkit for Haskell">
+  <meta property="og:site_name" content="Winter&#39;s Land">
+
+  
+    <meta property="og:image" content="">
+  
+  
+  <link href="/favicon.ico" rel="icon" type="image/x-ico">
+  <link rel="canonical" href="http://winterland.me/2017/08/18/stdio-A-simple-and-high-performance-IO toolkit-for-Haskell/index.html">
+  <link rel="alternate" href="/atom.xml" title="Winter&#39;s Land" type="application/atom+xml">
+  
+  <link rel="stylesheet" href="/css/style.css" media="screen" type="text/css">
+  <!--[if lt IE 9]><script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script><![endif]-->
+  
+<script type="text/javascript">
+  var _gaq = _gaq || [];
+  _gaq.push(['_setAccount', 'UA-45991394-1']);
+  _gaq.push(['_trackPageview']);
+
+  (function() {
+    var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+    ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
+    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+  })();
+</script>
+
+</head>
+</html>
+
+<body>
+  <header id="header" class="inner"><div class="blog-header">
+  <h1><a href="/">Winter&#39;s Land</a></h1>
+  <h2><a href="/">有朋自远方来，不亦乐乎</a></h2>
+</div>
+<nav id="main-nav" class="blog-nav">
+  <ul>
+    
+      <li><a href="/">首页/Home</a></li>
+    
+      <li><a href="/archives">归档/Archives</a></li>
+    
+      <li><a href="/about">关于/About</a></li>
+    
+  </ul>
+  <div class="clearfix"></div>
+</nav>
+<div class="clearfix"></div>
+</header>
+  <div id="content" class="inner">
+    
+      <div id="main-col" class="alignleft"><div id="wrapper"><article class="post">
+  
+    <div class="gallery">
+  <div class="photoset">
+    
+      <img src="">
+    
+  </div>
+  <div class="control">
+    <div class="prev"></div>
+    <div class="next"></div>
+  </div>
+</div>
+  
+  <div class="post-content">
+    <header>
+      
+        <div class="icon"></div>
+        <time datetime="2017-08-18T05:54:00.000Z"><a href="/2017/08/18/stdio-A-simple-and-high-performance-IO toolkit-for-Haskell/">2017-08-18</a></time>
+      
+      
+  
+    <h1 class="title">stdio - A simple and high-performance IO toolkit for Haskell</h1>
+  
+
+    </header>
+    <div class="entry">
+      
+        <p>Yesterday I and my friend Tao He write a short <a href="https://mail.haskell.org/pipermail/haskell-cafe/2019-February/130706.html" target="_blank" rel="noopener">release message</a> at a local cafe, we released a <a href="http://hackage.haskell.org/package/stdio" target="_blank" rel="noopener">new IO library</a> for GHC based on our previous work on combining libuv and GHC. Here I’d like to spend some time explaining what’s inside our new library besides the libuv binding part, what’s the motivation and what’s our solution. </p>
+<h1 id="A-new-Bytes-type"><a href="#A-new-Bytes-type" class="headerlink" title="A new Bytes type"></a>A new <code>Bytes</code> type</h1><p><code>ByteString</code> is used as the packed bytes type for years, it’s used as the buffer type in IO, serialization, parsing, etc. Because it uses pinned memory, thus allow everything works on <code>Ptr ()</code>s works on it. But this is really not ideal: pinned memory is only suitable for large blocks, if lots of small <code>ByteString</code>s are created during runtime, memory fragmentation may happen. And due to historic reason, <code>ByteString</code> choose to use <code>ForeignPtr</code> which contain a sum type, which is harder to unpack. To address these problems, in stdio we do a couple of things: </p>
+<ul>
+<li>To solve the system FFI use case, we add a separated <code>CBytes</code> type:</li>
+</ul>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="class"><span class="keyword">data</span> <span class="type">CBytes</span></span></span><br><span class="line">    = <span class="type">CBytesOnHeap</span>  <span class="meta">&#123;-# UNPACK #-&#125;</span> !(<span class="type">PrimArray</span> <span class="type">Word8</span>)   <span class="comment">-- ^ On heap pinned 'PrimArray'</span></span><br><span class="line">    | <span class="type">CBytesLiteral</span> <span class="meta">&#123;-# UNPACK #-&#125;</span> !<span class="type">CString</span>             <span class="comment">-- ^ String literals with static address</span></span><br></pre></td></tr></table></figure>
+<p>Which always wrap an immutable null-terminated string, It’s used as the file path type, domain name type, etc. We use a rewrite rule so that a literal <code>CBytes</code> is constructed directly from a literal <code>Addr#</code> in O(1).</p>
+<ul>
+<li>We build a <code>ByteArray#</code> based vector type, which based on <code>PrimArray</code> in primitive package.</li>
+</ul>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">-- from primitive &gt;= 0.6.4.0</span><br><span class="line">data PrimArray a = PrimArray ByteArray#</span><br><span class="line"></span><br><span class="line">data PrimVector a = PrimVector</span><br><span class="line">    &#123;-# UNPACK #-&#125; !(PrimArray a)   -- ^ payload</span><br><span class="line">    &#123;-# UNPACK #-&#125; !Int             -- ^ offset in elements of type a rather than in bytes</span><br><span class="line">    &#123;-# UNPACK #-&#125; !Int             -- ^ length in elements of type a rather than in bytes</span><br></pre></td></tr></table></figure>
+<p>With this definition, GHC RTS can freely choose to allocate on nursery or pinned blocks depending on vector size, creating small vectors are much cheaper. When you want to pass this new vector to a safe FFI, you will have to check if it’s a pinned one, if not a pinned copy is made (in unsafe FFI case, you can pass the <code>ByteArray#</code> directly).</p>
+<ul>
+<li>Now makes <code>Bytes</code>an alias to <code>PrimVector Word8</code>.</li>
+</ul>
+<p>There’s a key function that <code>ByteString</code> beats vector: <code>break</code>, it uses <code>memchr</code> if possible, which is SIMD enabled. This is very important because a high performance <code>Parser</code> will need a fast <code>takeWhile (==x)</code>, which in turn rely on finding the first specific byte quickly. We leverage GHC rewrite rules to solve this problem: use <code>memchr</code> if types matches <code>Bytes</code>. </p>
+<h1 id="Unified-Vector"><a href="#Unified-Vector" class="headerlink" title="Unified Vector"></a>Unified <code>Vector</code></h1><p>Like what we suggested in the <a href="/2017/08/18/an-unified-array-interface/">last blog post</a>, we build a unified vector for both boxed and unboxed vector. I didn’t provide separated typeclasses for slicing, indexing, etc, instead, I made it very clear that a vector is just a slice of an array:</p>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="class"><span class="keyword">class</span> (<span class="type">Arr</span> (<span class="type">MArray</span> <span class="title">v</span>) (<span class="type">IArray</span> <span class="title">v</span>) a) =&gt; <span class="type">Vec</span> v a <span class="keyword">where</span></span></span><br><span class="line">    <span class="class"><span class="keyword">type</span> <span class="type">MArray</span> v = (<span class="title">marr</span> :: * -&gt; * -&gt; *) | marr -&gt; v</span></span><br><span class="line">    <span class="class"><span class="keyword">type</span> <span class="type">IArray</span> v = (<span class="title">iarr</span> :: * -&gt; *) | iarr -&gt; v</span></span><br><span class="line">    toArr :: v a -&gt; (<span class="type">IArray</span> v a, <span class="type">Int</span>, <span class="type">Int</span>)</span><br><span class="line">    fromArr :: <span class="type">IArray</span> v a -&gt; <span class="type">Int</span> -&gt; <span class="type">Int</span> -&gt; v a</span><br></pre></td></tr></table></figure>
+<p>Both boxed <code>Vector</code> and unboxed <code>PrimVector</code> ‘s definition is as simple as it can be:</p>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br></pre></td><td class="code"><pre><span class="line"><span class="class"><span class="keyword">data</span> <span class="type">Vector</span> a = <span class="type">Vector</span></span></span><br><span class="line">    <span class="meta">&#123;-# UNPACK #-&#125;</span> !(<span class="type">SmallArray</span> a)  <span class="comment">-- ^ payload</span></span><br><span class="line">    <span class="meta">&#123;-# UNPACK #-&#125;</span> !<span class="type">Int</span>             <span class="comment">-- ^ offset</span></span><br><span class="line">    <span class="meta">&#123;-# UNPACK #-&#125;</span> !<span class="type">Int</span>             <span class="comment">-- ^ length</span></span><br><span class="line"></span><br><span class="line"><span class="class"><span class="keyword">instance</span> <span class="type">Vec</span> <span class="type">Vector</span> a <span class="keyword">where</span></span></span><br><span class="line">    <span class="class"><span class="keyword">type</span> <span class="type">MArray</span> <span class="type">Vector</span> = <span class="type">SmallMutableArray</span></span></span><br><span class="line">    <span class="class"><span class="keyword">type</span> <span class="type">IArray</span> <span class="type">Vector</span> = <span class="type">SmallArray</span></span></span><br><span class="line">    toArr (<span class="type">Vector</span> arr s l) = (arr, s, l)</span><br><span class="line">    fromArr = <span class="type">Vector</span></span><br><span class="line"></span><br><span class="line"><span class="class"><span class="keyword">data</span> <span class="type">PrimVector</span> a = <span class="type">PrimVector</span></span></span><br><span class="line">    <span class="meta">&#123;-# UNPACK #-&#125;</span> !(<span class="type">PrimArray</span> a)   <span class="comment">-- ^ payload</span></span><br><span class="line">    <span class="meta">&#123;-# UNPACK #-&#125;</span> !<span class="type">Int</span>             <span class="comment">-- ^ offset in elements of type a rather than in bytes</span></span><br><span class="line">    <span class="meta">&#123;-# UNPACK #-&#125;</span> !<span class="type">Int</span>             <span class="comment">-- ^ length in elements of type a rather than in bytes</span></span><br><span class="line"></span><br><span class="line"><span class="class"><span class="keyword">instance</span> <span class="type">Prim</span> a =&gt; <span class="type">Vec</span> <span class="type">PrimVector</span> a <span class="keyword">where</span></span></span><br><span class="line">    <span class="class"><span class="keyword">type</span> <span class="type">MArray</span> <span class="type">PrimVector</span> = <span class="type">MutablePrimArray</span></span></span><br><span class="line">    <span class="class"><span class="keyword">type</span> <span class="type">IArray</span> <span class="type">PrimVector</span> = <span class="type">PrimArray</span></span></span><br><span class="line">    toArr (<span class="type">PrimVector</span> arr s l) = (arr, s, l)</span><br><span class="line">    fromArr = <span class="type">PrimVector</span></span><br></pre></td></tr></table></figure>
+<p>In stdio vector combinators all work on <code>Vec v a</code> constraint, so something like type changing <code>map</code>, <code>traverse</code>, <code>zipWith&#39;</code>, etc are possible:</p>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">-- We don't require result vector type is the same with input one </span></span><br><span class="line"><span class="title">map</span> :: <span class="keyword">forall</span> u v a b. (<span class="type">Vec</span> u a, <span class="type">Vec</span> v b) =&gt; (a -&gt; b) -&gt; u a -&gt; v b</span><br><span class="line"><span class="title">traverse</span> :: (<span class="type">Vec</span> v a, <span class="type">Vec</span> u b, <span class="type">Applicative</span> f) =&gt; (a -&gt; f b) -&gt; v a -&gt; f (u b)</span><br><span class="line"><span class="title">zipWith'</span> :: (<span class="type">Vec</span> v a, <span class="type">Vec</span> u b, <span class="type">Vec</span> w c) =&gt; (a -&gt; b -&gt; c) -&gt; v a -&gt; u b -&gt; w c</span><br></pre></td></tr></table></figure>
+<p>I even implemented a KMP searching algorithm with this unified vector interface:</p>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="title">indices</span> :: (<span class="type">Vec</span> v a, <span class="type">Eq</span> a) =&gt; v a -&gt; v a -&gt; <span class="type">Bool</span> -&gt; [<span class="type">Int</span>]</span><br></pre></td></tr></table></figure>
+<p>Now enjoy searching an <code>Int</code> vector or boxed vector with O(n + k) time complexity!</p>
+<h1 id="Builder-and-Parser"><a href="#Builder-and-Parser" class="headerlink" title="Builder and Parser"></a><code>Builder</code> and <code>Parser</code></h1><p>Our new <code>Bytes</code> requires a whole new machinery of constrution and deconstrution, traditional <code>Builder</code> and <code>Parser</code>s all works on <code>Ptr ()</code>s, which is not suitable for our new <code>ByteArray#</code> based <code>Bytes</code> anymore. When we first want to design a solution for our new <code>Bytes</code> type at the time of 2017, we met a problem though: we can’t do unaligned access on <code>ByteArray#</code>s, e.g. we can’t read or write 4 bytes as <code>Word32</code> at a random index of a <code>ByteArray#</code> like a <code>Ptr ()</code>, the primitives GHC provides only allow us to read or write on aligned indexes. So the work on stdio stalled, until in GHC 8.6.1 <a href="https://phabricator.haskell.org/D4488" target="_blank" rel="noopener">new prim-ops are added</a>: </p>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="title">indexWord8ArrayAsWord16</span># :: <span class="type">ByteArray</span># -&gt; <span class="type">Int</span># -&gt; <span class="type">Word</span>#</span><br><span class="line"><span class="title">indexWord8ArrayAsWord32</span># :: <span class="type">ByteArray</span># -&gt; <span class="type">Int</span># -&gt; <span class="type">Word</span>#</span><br><span class="line"><span class="title">indexWord8ArrayAsWord64</span># :: <span class="type">ByteArray</span># -&gt; <span class="type">Int</span># -&gt; <span class="type">Word</span>#</span><br><span class="line">...</span><br></pre></td></tr></table></figure>
+<p>This is very important because if we can’t do unaligned access with <code>ByteArray#</code>, then we’re forced to break down a primitive value into bytes during serializing, or constructing from several bytes when parsing, which will be much slower than old <code>Storable</code> way. In stdio we provide <a href="http://hackage.haskell.org/package/stdio-0.1.0.0/docs/Std-Data-PrimArray-UnalignedAccess.html" target="_blank" rel="noopener"><code>UnalignedAccess</code> type class</a> to leverage these new prim-ops, which probably should be picked up in the next version of <code>primitive</code> package.</p>
+<p>Now the missing piece is ready, we can have our <code>Builder</code> and <code>Parser</code> now. In stdio we design something different: A <code>Builder</code> monad not only support building <code>Bytes</code> chunks, but also support building short strict <code>Bytes</code>. That is, we support different <code>AllocateStrategy</code>s:</p>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="class"><span class="keyword">data</span> <span class="type">AllocateStrategy</span> s</span></span><br><span class="line">    = <span class="type">DoubleBuffer</span>                      <span class="comment">-- Double the buffer and continue building</span></span><br><span class="line">    | <span class="type">InsertChunk</span> <span class="meta">&#123;-# UNPACK #-&#125;</span> !<span class="type">Int</span>   <span class="comment">-- Insert a new chunk and continue building</span></span><br><span class="line">    | <span class="type">OneShotAction</span> (<span class="type">V</span>.<span class="type">Bytes</span> -&gt; <span class="type">ST</span> s ())  <span class="comment">-- Freeze current chunk and perform action with it.</span></span><br></pre></td></tr></table></figure>
+<p>This is an internal type to implement different allocate strategies, and the <code>Builder</code> monad use this information to handle writing across buffer boundaries. The final API exposed to the user is very nature:</p>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="title">buildBytes</span> :: <span class="type">Builder</span> a -&gt; <span class="type">V</span>.<span class="type">Bytes</span></span><br><span class="line"><span class="title">buildBytesList</span> :: <span class="type">Builder</span> a -&gt; [<span class="type">V</span>.<span class="type">Bytes</span>]</span><br><span class="line"><span class="title">buildAndRun</span> :: (<span class="type">V</span>.<span class="type">Bytes</span> -&gt; <span class="type">IO</span> ()) -&gt; <span class="type">Builder</span> a -&gt; <span class="type">IO</span> ()</span><br></pre></td></tr></table></figure>
+<p>As for <code>Parser</code> type, we choose a very simple CPS formula:</p>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="class"><span class="keyword">data</span> <span class="type">Result</span> a</span></span><br><span class="line">    = <span class="type">Success</span> !<span class="type">V</span>.<span class="type">Bytes</span> a</span><br><span class="line">    | <span class="type">Failure</span> !<span class="type">V</span>.<span class="type">Bytes</span> <span class="type">String</span></span><br><span class="line">    | <span class="type">Partial</span> (<span class="type">V</span>.<span class="type">Bytes</span> -&gt; <span class="type">Result</span> a)</span><br><span class="line"></span><br><span class="line"><span class="class"><span class="keyword">type</span> <span class="type">ParseStep</span> r = <span class="type">V</span>.<span class="type">Bytes</span> -&gt; <span class="type">Result</span> r</span></span><br><span class="line"></span><br><span class="line"><span class="class"><span class="keyword">newtype</span> <span class="type">Parser</span> a = <span class="type">Parser</span> &#123; <span class="title">runParser</span> :: <span class="title">forall</span> <span class="title">r</span> .  (<span class="title">a</span> -&gt; <span class="type">ParseStep</span> <span class="title">r</span>) -&gt; <span class="type">ParseStep</span> <span class="title">r</span> &#125;</span></span><br></pre></td></tr></table></figure>
+<p>After I implemented this <code>Parser</code> then I found it’s exactly the same one with <a href="http://hackage.haskell.org/package/scanner" target="_blank" rel="noopener">scanner</a> package, it’s not a coincidence though: in my own benchmark this formula is as fast as the non-resumable one from store package!</p>
+<p>Unlike what Yuras claimed in scanner package, it’s actually <a href="https://github.com/haskell-stdio/stdio/blob/master/Std/Data/Parser/Base.hs#L116" target="_blank" rel="noopener">quite easy</a> to provide an <code>Alternative</code> instance for this formula. And if a user doesn’t use it, there will be no backtracking cost at all. </p>
+<p>We provide high quality numeric <code>Builder</code>s and <code>Parser</code>s as well, the IEEE floating formatting is based on my <a href="https://github.com/haskell/bytestring/pull/115" target="_blank" rel="noopener">grusi3 patch</a>, which is much faster.</p>
+<p>Some extra words on <code>Builder</code> here: why do we choose a monadic interface instead of monoid one? The reasons in my mind are:</p>
+<ul>
+<li><p>A monadic interface is more powerful, you can do something like accumulating a verification value while building bytes, or add an extra <code>ReaderT</code> layer to do some building constant injections.</p>
+</li>
+<li><p>A monadic interface is more symmetrical to <code>Parser</code>, e.g. we probably have something like</p>
+</li>
+</ul>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">import</span> <span class="keyword">qualified</span> Std.Data.Builder <span class="keyword">as</span> B</span><br><span class="line"><span class="keyword">import</span> <span class="keyword">qualified</span> Std.Data.Parser  <span class="keyword">as</span> P</span><br><span class="line"></span><br><span class="line"><span class="title">buildFoo</span> :: <span class="type">Foo</span> -&gt; <span class="type">Builder</span> ()</span><br><span class="line"><span class="title">buildFoo</span> (<span class="type">Foo</span> x y z) = <span class="keyword">do</span></span><br><span class="line">    <span class="type">B</span>.bytes x</span><br><span class="line">    <span class="type">B</span>.encodePrim magic</span><br><span class="line">    <span class="type">B</span>.encodePrim y</span><br><span class="line">    <span class="type">B</span>.double z</span><br><span class="line"></span><br><span class="line"><span class="title">parseFoo</span> :: <span class="type">Parser</span> <span class="type">Foo</span></span><br><span class="line"><span class="title">parseFoo</span> = <span class="keyword">do</span> </span><br><span class="line">    x &lt;- <span class="type">P</span>.takeWhile (/=magic)</span><br><span class="line">    <span class="type">P</span>.word8 magic </span><br><span class="line">    y &lt;- <span class="type">P</span>.decodePrim </span><br><span class="line">    z &lt;- <span class="type">P</span>.double </span><br><span class="line">    return (<span class="type">Foo</span> x y z)</span><br></pre></td></tr></table></figure>
+<ul>
+<li>A monadic interface works extremely well with <code>Control.Monad</code>, while control structures on monoid is a bit of lacking.</li>
+</ul>
+<h1 id="Buffered-IO"><a href="#Buffered-IO" class="headerlink" title="Buffered IO"></a>Buffered IO</h1><p>Buffered IO is a fundamental module to any IO toolkit since it can greatly boost IO performance. In base we have <code>Handle</code> type which is powerful but very complex. In stdio we designed a rather simple solution based on the idea from io-streams package: a buffered input device should support push back operation, so that running a resumable <code>Parser</code> which only consumes part of the buffer is not a problem. The API of buffered IO is as following:</p>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line"><span class="title">readBuffer</span> :: (<span class="type">HasCallStack</span>, <span class="type">Input</span> i) =&gt; <span class="type">BufferedInput</span> i -&gt; <span class="type">IO</span> <span class="type">V</span>.<span class="type">Bytes</span></span><br><span class="line"><span class="title">readExactly</span> :: (<span class="type">HasCallStack</span>, <span class="type">Input</span> i) =&gt; <span class="type">Int</span> -&gt; <span class="type">BufferedInput</span> i -&gt; <span class="type">IO</span> <span class="type">V</span>.<span class="type">Bytes</span></span><br><span class="line"><span class="title">readToMagic</span> :: (<span class="type">HasCallStack</span>, <span class="type">Input</span> i) =&gt; <span class="type">Word8</span> -&gt; <span class="type">BufferedInput</span> i -&gt; <span class="type">IO</span> <span class="type">V</span>.<span class="type">Bytes</span></span><br><span class="line"><span class="title">readParser</span> :: (<span class="type">HasCallStack</span>, <span class="type">Input</span> i) =&gt; <span class="type">P</span>.<span class="type">Parser</span> a -&gt; <span class="type">BufferedInput</span> i -&gt; <span class="type">IO</span> (<span class="type">ReadResult</span> a)</span><br><span class="line">...</span><br><span class="line"><span class="title">writeBuffer</span> :: (<span class="type">Output</span> o) =&gt; <span class="type">BufferedOutput</span> o -&gt; <span class="type">V</span>.<span class="type">Bytes</span> -&gt; <span class="type">IO</span> ()</span><br><span class="line"><span class="title">writeBuilder</span> :: (<span class="type">Output</span> o) =&gt; <span class="type">BufferedOutput</span> o -&gt; <span class="type">B</span>.<span class="type">Builder</span> a -&gt; <span class="type">IO</span> ()</span><br><span class="line"><span class="title">flushBuffer</span> :: <span class="type">Output</span> f =&gt; <span class="type">BufferedOutput</span> f -&gt; <span class="type">IO</span> ()</span><br><span class="line">...</span><br></pre></td></tr></table></figure>
+<p>Nothing fancy, every function should work as you expected. Note we don’t provide thread-safe guarantees here: to use a <code>BufferedInput</code> or <code>BufferedOutput</code> in multiple threads, use an <code>MVar</code> to protect concurrent access.</p>
+<h1 id="More-to-come"><a href="#More-to-come" class="headerlink" title="More to come"></a>More to come</h1><p>For now, stdio is already in its shape. We have put a lot of time on handcrafting over last two years. Lots of experiments, lots of tests. We hope this little project can start to make some of your jobs easier, but of course, it’s still in its early stage. There’re a lot of functionalities we want to add to it eventually, here is something on the roadmap:</p>
+<ul>
+<li>Implement a binary serialization module similar to binary, cereal package.</li>
+<li>Implement a JSON module.</li>
+<li>Support UDP device.</li>
+<li>Add DNS functionality, i.e <code>getaddrinfo</code> binding.</li>
+<li>Add HTTP protocol support.</li>
+<li>Add TLS(transfer layer security) support.</li>
+</ul>
+<p>Both I and Tao He know that maintain a project with size like this will be out of our capability, so we’d like to ask help from Haskell community here. How can we grow this project further? In which direction our community needs it to be? We’d like to hear your opinions, and of course, your user experience report with stdio!</p>
+
+      
+    </div>
+    <footer>
+      
+        
+        
+          <script src="https://utteranc.es/client.js" repo="winterland1989/winterland1989.github.io" branch="master" issue-term="pathname" async>
+          </script>
+        
+      
+
+      <div class="clearfix"></div>
+    </footer>
+  </div>
+</article>
+</div></div>
+      <aside id="sidebar" class="alignright">
+  <div class="search">
+  <form action="//google.com/search" method="get" accept-charset="utf-8">
+    <input type="search" name="q" results="0" placeholder="Search">
+    <input type="hidden" name="q" value="site:winterland.me">
+  </form>
+</div>
+
+  
+<div class="widget tag">
+  <h3 class="title">Tags</h3>
+  <ul class="entry">
+  
+    <li><a href="/tags/haskell/">haskell</a><small>2</small></li>
+  
+  </ul>
+</div>
+
+
+</aside>
+    
+    <div class="clearfix"></div>
+  </div>
+  <footer id="footer" class="inner"><div class="aligncenter">
+  
+  &copy; 2019 winter
+  
+</div>
+<div class="clearfix"></div></footer>
+  <script src="http://cdn.staticfile.org/jquery/2.1.1-rc2/jquery.min.js"></script>
+<script src="/js/jquery.imagesloaded.min.js"></script>
+
+
+
+<div id="scroll2top">
+<img src="/scroll2top/arrow.png">
+</div>
+<script src="/scroll2top/scroll2top.min.js"></script>
+<div id="winterland">
+  <canvas></canvas>
+</div>
+<script src="/js/winterland.min.js"></script>
+<!-- mathjax config similar to math.stackexchange -->
+
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true
+    }
+  });
+</script>
+
+<script type="text/x-mathjax-config">
+    MathJax.Hub.Config({
+      tex2jax: {
+        skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+      }
+    });
+</script>
+
+<script type="text/x-mathjax-config">
+    MathJax.Hub.Queue(function() {
+        var all = MathJax.Hub.getAllJax(), i;
+        for(i=0; i < all.length; i += 1) {
+            all[i].SourceElement().parentNode.className += ' has-jax';
+        }
+    });
+</script>
+
+<script src="https://www.zybuluo.com/static/MathJax/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+
+
+  
+    <!-- Go to www.addthis.com/dashboard to customize your tools -->
+    <script type="text/javascript" src="//s7.addthis.com/js/300/addthis_widget.js#pubid=ra-59a3e3079f1b7ad5"></script> 
+  
+
+</body>
+</html>
