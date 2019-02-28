@@ -1,0 +1,208 @@
+<!DOCTYPE HTML>
+<html>
+<head><meta name="generator" content="Hexo 3.8.0">
+  <meta charset="utf-8">
+  
+  <title>Aeson&#39;s mysterious lazy parsing | Winter&#39;s Land</title>
+  <meta name="author" content="winter">
+  
+  <meta name="description" content="Today I’m hacking on a new JSON parser for my stdio package, of course i reused quite a lot of code from aeson. Kudos, Bryan O’Sullivan! While this ti">
+  
+  
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+
+  <meta property="og:title" content="Aeson&#39;s mysterious lazy parsing">
+  <meta property="og:site_name" content="Winter&#39;s Land">
+
+  
+    <meta property="og:image" content="">
+  
+  
+  <link href="/favicon.ico" rel="icon" type="image/x-ico">
+  <link rel="canonical" href="http://winterland.me/2019/03/05/aeson's-mysterious-lazy-parsing/index.html">
+  <link rel="alternate" href="/atom.xml" title="Winter&#39;s Land" type="application/atom+xml">
+  
+  <link rel="stylesheet" href="/css/style.css" media="screen" type="text/css">
+  <!--[if lt IE 9]><script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script><![endif]-->
+  
+<script type="text/javascript">
+  var _gaq = _gaq || [];
+  _gaq.push(['_setAccount', 'UA-45991394-1']);
+  _gaq.push(['_trackPageview']);
+
+  (function() {
+    var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+    ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
+    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+  })();
+</script>
+
+</head>
+</html>
+
+<body>
+  <header id="header" class="inner"><div class="blog-header">
+  <h1><a href="/">Winter&#39;s Land</a></h1>
+  <h2><a href="/">有朋自远方来，不亦乐乎</a></h2>
+</div>
+<nav id="main-nav" class="blog-nav">
+  <ul>
+    
+      <li><a href="/">首页/Home</a></li>
+    
+      <li><a href="/archives">归档/Archives</a></li>
+    
+      <li><a href="/about">关于/About</a></li>
+    
+  </ul>
+  <div class="clearfix"></div>
+</nav>
+<div class="clearfix"></div>
+</header>
+  <div id="content" class="inner">
+    
+      <div id="main-col" class="alignleft"><div id="wrapper"><article class="post">
+  
+    <div class="gallery">
+  <div class="photoset">
+    
+      <img src="">
+    
+  </div>
+  <div class="control">
+    <div class="prev"></div>
+    <div class="next"></div>
+  </div>
+</div>
+  
+  <div class="post-content">
+    <header>
+      
+        <div class="icon"></div>
+        <time datetime="2019-03-04T17:55:00.000Z"><a href="/2019/03/05/aeson's-mysterious-lazy-parsing/">2019-03-05</a></time>
+      
+      
+  
+    <h1 class="title">Aeson&#39;s mysterious lazy parsing</h1>
+  
+
+    </header>
+    <div class="entry">
+      
+        <p>Today I’m hacking on a new JSON parser for my stdio package, of course i reused quite a lot of code from aeson. Kudos, Bryan O’Sullivan! While this time i really hacked into the core, I learned something i never really though about. </p>
+<p>Aeson provide two flavor of parsing entrances: <code>decode</code> and <code>decode&#39;</code> (and similarly <code>eitherDecode</code> and <code>eitherDecode&#39;</code>). The document on <code>decode</code> says that <code>This function parses immediately, but defers conversion.</code>. I have never actually even though about it carefully because this looks quite obvious to a Haskell veteran like me. <code>defers conversion</code>? It must be the costs of convert numbers, strings, arrays, etc. are too high, so that during parsing we suspend the conversion and return a result containing thunks. So if our JSON instances only use part of the keys, we can save some time.</p>
+<p>OK, that’s my interpretation of those docs for a long time, and i always prefer <code>decode</code> to <code>decode&#39;</code> since thunking those conversions makes sense to me. But when i started to hack a JSON value parser from ground, suddenly I realized this is far more complex than my first look, a question is begging me to answer:</p>
+<pre><code>How could be this `conversion defering` possible, when parsing should tell us if the JSON is valid? 
+</code></pre><p>There must be something wrong here. After parsing we should have something like <code>Either String a</code>, if we defer the conversions, how could we know it’s <code>Right</code>? If the defered conversion somehow met problems, and we already give a <code>Right</code> result, a bottom <code>undefined</code> will be produced? No this’s just unacceptable, we must do all the conversions before we can be sure the result is <code>Right</code>. But what’s the point of this lazy vs strict arrangement then?</p>
+<p>Reading source quickly leads us to the difference before <a href="https://github.com/bos/aeson/blob/master/Data/Aeson/Parser/Internal.hs#L78" target="_blank" rel="noopener"><code>json</code> and <code>json&#39;</code></a> parser: i.e. it’s the conversions between JSON bytes and <code>Value</code>, aeson’s intermediate JSON representation, makes this differences. In <code>json</code> case,  thunks are produced during parsing. But where’re those thunks? What makes things more mysterious is that <code>Value</code> use strict field all the way:</p>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line"><span class="class"><span class="keyword">type</span> <span class="type">Object</span> = <span class="type">HashMap</span> <span class="type">Text</span> <span class="type">Value</span></span></span><br><span class="line"><span class="class"><span class="keyword">type</span> <span class="type">Array</span> = <span class="type">Vector</span> <span class="type">Value</span></span></span><br><span class="line"></span><br><span class="line"><span class="comment">-- | aeson's intermediate JSON representation</span></span><br><span class="line"><span class="class"><span class="keyword">data</span> <span class="type">Value</span> = <span class="type">Object</span> !<span class="type">Object</span></span></span><br><span class="line">           | <span class="type">Array</span> !<span class="type">Array</span></span><br><span class="line">           | <span class="type">String</span> !<span class="type">Text</span></span><br><span class="line">           | <span class="type">Number</span> !<span class="type">Scientific</span></span><br><span class="line">           | <span class="type">Bool</span> !<span class="type">Bool</span></span><br><span class="line">           | <span class="type">Null</span></span><br><span class="line">             <span class="keyword">deriving</span> (<span class="type">Eq</span>, <span class="type">Read</span>, <span class="type">Show</span>, <span class="type">Typeable</span>, <span class="type">Data</span>, <span class="type">Generic</span>)</span><br></pre></td></tr></table></figure>
+<p>Look at those strict fields! It means that if we force a <code>Value</code> to WHNF, e.g. to know if it’s a <code>Number</code> or a <code>String</code>, we have to force the <code>Scientific</code> or <code>Text</code> payload. The only possible places for thunks are <strong>the payload of the payload</strong> of <code>Object</code>s and <code>Array</code>s, which are payloads of a <code>HashMap</code> or a <code>Vector</code> respectively. So during building these <code>HashMap</code>s and <code>Vector</code>s, we write thunks instead of WHNF data structures. But why the laziness doesn’t bring bottom problem? If we have parsed the whole JSON bytes without pack results into <code>HashMap</code> or <code>Vector</code>, so where’re they? Reading the source of internal lazy parsers reveal the answer:</p>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br></pre></td><td class="code"><pre><span class="line"><span class="title">arrayValues</span> :: <span class="type">Parser</span> <span class="type">Value</span> -&gt; <span class="type">Parser</span> (<span class="type">Vector</span> <span class="type">Value</span>)</span><br><span class="line"><span class="title">arrayValues</span> val = <span class="keyword">do</span></span><br><span class="line">  skipSpace</span><br><span class="line">  w &lt;- <span class="type">A</span>.peekWord8'</span><br><span class="line">  <span class="keyword">if</span> w == <span class="type">CLOSE_SQUARE</span></span><br><span class="line">    <span class="keyword">then</span> <span class="type">A</span>.anyWord8 &gt;&gt; return <span class="type">Vector</span>.empty</span><br><span class="line">    <span class="keyword">else</span> loop [] <span class="number">1</span></span><br><span class="line">  <span class="keyword">where</span></span><br><span class="line">    loop acc !len = <span class="keyword">do</span></span><br><span class="line">      v &lt;- val &lt;* skipSpace</span><br><span class="line">      ch &lt;- <span class="type">A</span>.satisfy $ \w -&gt; w == <span class="type">COMMA</span> || w == <span class="type">CLOSE_SQUARE</span></span><br><span class="line">      <span class="keyword">if</span> ch == <span class="type">COMMA</span></span><br><span class="line">        <span class="keyword">then</span> skipSpace &gt;&gt; loop (v:acc) (len+<span class="number">1</span>)</span><br><span class="line">        <span class="keyword">else</span> return (<span class="type">Vector</span>.reverse (<span class="type">Vector</span>.fromListN len (v:acc)))</span><br></pre></td></tr></table></figure>
+<p><code>Parser</code> is classic CPS parser from <code>attoparsec</code> package, In CPS parser’s world, a parser will parse its own part and call next parser if itself runs successfully. To get a successful parsing result, we have to run though all the parsers in a line, convert everything into a proper result and pass on. Look at the <code>loop</code> above, it will parse all the elements of a JSON array into a list before call next continuation. Now the important part comes:</p>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="title">return</span> (<span class="type">Vector</span>.reverse (<span class="type">Vector</span>.fromListN len (v:acc)))</span><br></pre></td></tr></table></figure>
+<p>Since aeson uses accumulator style to build the list, a <code>reverse</code> is neccessary, but this monadic <code>return</code> is not strict! so we build a thunk to defer the vector building process, but the list of elements is already there, in our memory, built as the parsing loop goes. So yes all parsing work is done, and we don’t have to worry about bottoms coming from defered conversions: the only defered conversion here is just a conversion between list of elements to vector of elements, which should never fail.</p>
+<p>Similarly in <code>HashMap</code> case, we have already parsed all the key-values into a list of key-value pairs. The loop body of the <code>Object</code> parser is like this:</p>
+<figure class="highlight haskell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="title">loop</span> acc = <span class="keyword">do</span></span><br><span class="line">  k &lt;- str &lt;* skipSpace &lt;* char ':'</span><br><span class="line">  v &lt;- val &lt;* skipSpace</span><br><span class="line">  ch &lt;- <span class="type">A</span>.satisfy $ \w -&gt; w == <span class="type">COMMA</span> || w == <span class="type">CLOSE_CURLY</span></span><br><span class="line">  <span class="keyword">let</span> acc' = (k, v) : acc</span><br><span class="line">  <span class="keyword">if</span> ch == <span class="type">COMMA</span></span><br><span class="line">    <span class="keyword">then</span> skipSpace &gt;&gt; loop acc'</span><br><span class="line">    <span class="keyword">else</span> return (<span class="type">H</span>.fromList acc')</span><br></pre></td></tr></table></figure>
+<p>Now things are clear, we never miss a thing during parsing, and we only defered two conversions when using aeson’s lazy paring. Now the question becomes how does this laziness helped things? Will if we modify <a href="https://github.com/bos/aeson/blob/master/benchmarks/AesonParse.hs#L30" target="_blank" rel="noopener">the benchmarks</a> in aeson’s repo, change the <code>json</code> parser to a strict <code>json&#39;</code>, suddenly performance dropped by ~40%.</p>
+<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br></pre></td><td class="code"><pre><span class="line"># change to use a strict parser</span><br><span class="line">    json-data/twitter1.json :: 60000 times</span><br><span class="line">0.8 KB: 68836 msg\/sec (56.1 MB\/sec)</span><br><span class="line">    json-data/twitter10.json :: 13000 times</span><br><span class="line">6.4 KB: 11712 msg\/sec (73.7 MB\/sec)</span><br><span class="line">    json-data/twitter20.json :: 7500 times</span><br><span class="line">11.8 KB: 5568 msg\/sec (64.1 MB\/sec)</span><br><span class="line">    json-data/twitter50.json :: 2500 times</span><br><span class="line">31.2 KB: 2045 msg\/sec (62.3 MB\/sec)</span><br><span class="line">    json-data/twitter100.json :: 1000 times</span><br><span class="line">61.5 KB: 927 msg\/sec (55.7 MB\/sec)</span><br><span class="line">    json-data/jp10.json :: 4000 times</span><br><span class="line">14.6 KB: 6087 msg\/sec (87.0 MB\/sec)</span><br><span class="line">    json-data/jp50.json :: 1200 times</span><br><span class="line">44.1 KB: 1751 msg\/sec (75.4 MB\/sec)</span><br><span class="line">    json-data/jp100.json :: 700 times</span><br><span class="line">82.9 KB: 820 msg\/sec (66.3 MB\/sec)</span><br><span class="line"></span><br><span class="line"># now is the lazy parser</span><br><span class="line">    json-data/twitter1.json :: 60000 times</span><br><span class="line">0.8 KB: 97350 msg\/sec (79.4 MB\/sec)</span><br><span class="line">    json-data/twitter10.json :: 13000 times</span><br><span class="line">6.4 KB: 17675 msg\/sec (111.1 MB\/sec)</span><br><span class="line">    json-data/twitter20.json :: 7500 times</span><br><span class="line">11.8 KB: 8692 msg\/sec (100.0 MB\/sec)</span><br><span class="line">    json-data/twitter50.json :: 2500 times</span><br><span class="line">31.2 KB: 3171 msg\/sec (96.6 MB\/sec)</span><br><span class="line">    json-data/twitter100.json :: 1000 times</span><br><span class="line">61.5 KB: 1392 msg\/sec (83.6 MB\/sec)</span><br><span class="line">    json-data/jp10.json :: 4000 times</span><br><span class="line">14.6 KB: 8435 msg\/sec (120.5 MB\/sec)</span><br><span class="line">    json-data/jp50.json :: 1200 times</span><br><span class="line">44.1 KB: 2430 msg\/sec (104.6 MB\/sec)</span><br><span class="line">    json-data/jp100.json :: 700 times</span><br><span class="line">82.9 KB: 1119 msg\/sec (90.6 MB\/sec)</span><br></pre></td></tr></table></figure>
+<p>This big performance gap lies on <code>Vector</code> and <code>HashMap</code> building, some further benchmarks indicate it’s the <code>HashMap</code> building which is costing: calculating hashes and build a HAMT trees is not a easy job. If everything stops at this stage, and we never access fields of the <code>HashMap</code>, then we can say laziness have improved our performance. But this is just a false positive like many others, as long as we want to access a single field from the <code>HashMap</code>, the thunk will be entered and building cost will be paid, even if you don’t want every field of the <code>HashMap</code>, of course the <code>Value</code> nested inside the field still may contain thunks, but we’re actually not saving time in common case, where the final step of JSON parsing is to covert a JSON <code>Value</code> to a Haskell record. </p>
+<p>From the memory perspective, lazy parsing is more problematic: we are hold lists instead of packed <code>Vector</code>s or <code>HashMap</code>, which means many indirection pointers and boxes can not be GCed, all the nodes of the JSON document is parsed anyway, and they are holded within Haskell lists, which are holded by conversion thunks. That’s just awful!</p>
+<p>My conclusion: avoid use lazy parsing in aeson if possible, it’s not worked like what I expected, and brings no benefits in most of the case.</p>
+
+      
+    </div>
+    <footer>
+      
+        
+        
+          <script src="https://utteranc.es/client.js" repo="winterland1989/winterland1989.github.io" branch="master" issue-term="pathname" async>
+          </script>
+        
+      
+
+      <div class="clearfix"></div>
+    </footer>
+  </div>
+</article>
+</div></div>
+      <aside id="sidebar" class="alignright">
+  <div class="search">
+  <form action="//google.com/search" method="get" accept-charset="utf-8">
+    <input type="search" name="q" results="0" placeholder="Search">
+    <input type="hidden" name="q" value="site:winterland.me">
+  </form>
+</div>
+
+  
+<div class="widget tag">
+  <h3 class="title">Tags</h3>
+  <ul class="entry">
+  
+    <li><a href="/tags/haskell/">haskell</a><small>3</small></li>
+  
+  </ul>
+</div>
+
+
+</aside>
+    
+    <div class="clearfix"></div>
+  </div>
+  <footer id="footer" class="inner"><div class="aligncenter">
+  
+  &copy; 2019 winter
+  
+</div>
+<div class="clearfix"></div></footer>
+  <script src="http://cdn.staticfile.org/jquery/2.1.1-rc2/jquery.min.js"></script>
+<script src="/js/jquery.imagesloaded.min.js"></script>
+
+
+
+<div id="scroll2top">
+<img src="/scroll2top/arrow.png">
+</div>
+<script src="/scroll2top/scroll2top.min.js"></script>
+<div id="winterland">
+  <canvas></canvas>
+</div>
+<script src="/js/winterland.min.js"></script>
+<!-- mathjax config similar to math.stackexchange -->
+
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true
+    }
+  });
+</script>
+
+<script type="text/x-mathjax-config">
+    MathJax.Hub.Config({
+      tex2jax: {
+        skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+      }
+    });
+</script>
+
+<script type="text/x-mathjax-config">
+    MathJax.Hub.Queue(function() {
+        var all = MathJax.Hub.getAllJax(), i;
+        for(i=0; i < all.length; i += 1) {
+            all[i].SourceElement().parentNode.className += ' has-jax';
+        }
+    });
+</script>
+
+<script src="https://www.zybuluo.com/static/MathJax/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+
+
+
+  
+    <!-- Go to www.addthis.com/dashboard to customize your tools -->
+    <script type="text/javascript" src="//s7.addthis.com/js/300/addthis_widget.js#pubid=ra-59a3e3079f1b7ad5"></script> 
+  
+
+</body>
+</html>
