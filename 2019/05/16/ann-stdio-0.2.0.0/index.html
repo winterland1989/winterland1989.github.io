@@ -1,0 +1,224 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+  <title>[ANN] stdio-0.2.0.0 | Winter&#39;s Land</title>
+  <meta name="author" content="winter">
+  
+  <meta name="description" content="Today I’m very happy to announce a new beta version of stdio is released on hackage, there’re some large additions in this version:
+
+Add UDP module.
+A">
+  
+  
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+
+  <meta property="og:title" content="[ANN] stdio-0.2.0.0"/>
+  <meta property="og:site_name" content="Winter&#39;s Land"/>
+
+  
+    <meta property="og:image" content=""/>
+  
+  
+  <link href="/favicon.ico" rel="icon" type="image/x-ico">
+  <link rel="canonical" href="http://winterland.me/2019/05/16/ann-stdio-0.2.0.0/index.html" />
+  <link rel="alternate" href="/atom.xml" title="Winter&#39;s Land" type="application/atom+xml">
+  
+  <link rel="stylesheet" href="/css/style.css" media="screen" type="text/css">
+  <!--[if lt IE 9]><script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script><![endif]-->
+  
+<script type="text/javascript">
+  var _gaq = _gaq || [];
+  _gaq.push(['_setAccount', 'UA-45991394-1']);
+  _gaq.push(['_trackPageview']);
+
+  (function() {
+    var ga = document.createElement('script'); ga.type = 'text/javascript'; ga.async = true;
+    ga.src = ('https:' == document.location.protocol ? 'https://ssl' : 'http://www') + '.google-analytics.com/ga.js';
+    var s = document.getElementsByTagName('script')[0]; s.parentNode.insertBefore(ga, s);
+  })();
+</script>
+
+</head>
+
+
+<body>
+  <header id="header" class="inner"><div class="blog-header">
+  <h1><a href="/">Winter&#39;s Land</a></h1>
+  <h2><a href="/">有朋自远方来，不亦乐乎</a></h2>
+</div>
+<nav id="main-nav" class="blog-nav">
+  <ul>
+    
+      <li><a href="/">首页/Home</a></li>
+    
+      <li><a href="/archives">归档/Archives</a></li>
+    
+      <li><a href="/about">关于/About</a></li>
+    
+  </ul>
+  <div class="clearfix"></div>
+</nav>
+<div class="clearfix"></div>
+</header>
+  <div id="content" class="inner">
+    
+      <div id="main-col" class="alignleft"><div id="wrapper"><article class="post">
+  
+    <div class="gallery">
+  <div class="photoset">
+    
+      <img src="">
+    
+  </div>
+  <div class="control">
+    <div class="prev"></div>
+    <div class="next"></div>
+  </div>
+</div>
+  
+  <div class="post-content">
+    <header>
+      
+        <div class="icon"></div>
+        <time datetime="2019-05-16T10:18:00.000Z"><a href="/2019/05/16/ann-stdio-0.2.0.0/">2019-05-16</a></time>
+      
+      
+  
+    <h1 class="title">[ANN] stdio-0.2.0.0</h1>
+  
+
+    </header>
+    <div class="entry">
+      
+        <p>Today I’m very happy to announce a new beta version of <code>stdio</code> is released on hackage, there’re some large additions in this version:</p>
+<ul>
+<li>Add UDP module.</li>
+<li>Add JSON module.</li>
+<li>Add <code>ToText</code> class to <code>Std.Data.TextBuilder</code> module.</li>
+</ul>
+<p>The largest addition is a new JSON module, features <a href="https://github.com/haskell-stdio/JSONTestSuite" target="_blank" rel="noopener">full RFC 8259 compliance</a> and <a href="https://github.com/haskell-stdio/stdio/tree/master/bench/json" target="_blank" rel="noopener">2~3x faster performance</a>. Try to bring big improvements over a very mature library like aeson is not an easy task, parts of the improvements come from faster <code>Parser</code> and <code>Builder</code> infrastructures in <code>stdio</code>. But we also made a few other improvements:</p>
+<ul>
+<li><p>To improve building lookup table during JSON parsing(and many other formats as well), An ordered map module based on sorted vectors and binary-search is also added, there’re actually four modules providing similar functions to <code>containers</code>:</p>
+<ul>
+<li><code>Std.Data.Vector.FlatMap</code></li>
+<li><code>Std.Data.Vector.FlatIntMap</code></li>
+<li><code>Std.Data.Vector.FlatSet</code></li>
+<li><code>Std.Data.Vector.FlatIntSet</code></li>
+</ul>
+</li>
+</ul>
+<p>These data structures have different time and memory characteristics from tree-based ones, and suits some situations better, e.g. intermediate lookup table.</p>
+<ul>
+<li><p>To improve JSON string parsing, we made an UTF-8 validation state machine with JSON unescaping logic built-in written in C, combine with the ability to scan a whole chunk of input(provided by our new <code>Parser</code>, namely <code>scanChunks</code>), we now have faster JSON string parsing performance than some native code(<code>JSON.parse</code> from nodejs).</p>
+</li>
+<li><p>Numeric parsing is also improved, e.g. we changed <code>Integer</code> decoding loop to use machine words if range permits, then covert the result to <code>Integer</code> rather than use <code>Integer</code> all the time.</p>
+</li>
+</ul>
+<p>There’re also lots of improvements and simplifications contribute to faster performance. Overall this is good proof that our new <code>Parser</code> and <code>Builder</code> infrastructures work well.</p>
+<p>Besides the JSON module, another important addition is the <code>ToText</code> class in <code>Std.Data.TextBuilder</code>, which is also derivable via generics. The format is chosen to follow <code>Show</code> class as much as possible, this is a very handy class when you need to quickly turn something into a builder or text.</p>
+<p>A UDP module is added quite easily since the IO manager part is in place. Due to the message based nature, the API is quite different from TCP, design suggestions are welcomed!</p>
+<p>Happy hacking!<br>Cheers</p>
+
+      
+    </div>
+    <footer>
+      
+        
+        
+          <script src="https://utteranc.es/client.js"
+            repo="winterland1989/winterland1989.github.io"
+            branch="master"
+            issue-term="pathname"
+            async>
+          </script>
+        
+      
+
+      <div class="clearfix"></div>
+    </footer>
+  </div>
+</article>
+</div></div>
+      <aside id="sidebar" class="alignright">
+  <div class="search">
+  <form action="//google.com/search" method="get" accept-charset="utf-8">
+    <input type="search" name="q" results="0" placeholder="Search">
+    <input type="hidden" name="q" value="site:winterland.me">
+  </form>
+</div>
+
+  
+<div class="widget tag">
+  <h3 class="title">Tags</h3>
+  <ul class="entry">
+  
+    <li><a href="/tags/haskell/">haskell</a><small>8</small></li>
+  
+  </ul>
+</div>
+
+
+</aside>
+    
+    <div class="clearfix"></div>
+  </div>
+  <footer id="footer" class="inner"><div class="aligncenter">
+  
+  &copy; 2019 winter
+  
+</div>
+<div class="clearfix"></div></footer>
+  <script src="http://cdn.staticfile.org/jquery/2.1.1-rc2/jquery.min.js"></script>
+<script src="/js/jquery.imagesloaded.min.js"></script>
+
+
+
+<div id="scroll2top">
+<img src="/scroll2top/arrow.png"/>
+</div>
+<script src="/scroll2top/scroll2top.min.js"></script>
+<div id="winterland">
+  <canvas></canvas>
+</div>
+<script src="/js/winterland.min.js"></script>
+<!-- mathjax config similar to math.stackexchange -->
+
+<script type="text/x-mathjax-config">
+  MathJax.Hub.Config({
+    tex2jax: {
+      inlineMath: [ ['$','$'], ["\\(","\\)"] ],
+      processEscapes: true
+    }
+  });
+</script>
+
+<script type="text/x-mathjax-config">
+    MathJax.Hub.Config({
+      tex2jax: {
+        skipTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+      }
+    });
+</script>
+
+<script type="text/x-mathjax-config">
+    MathJax.Hub.Queue(function() {
+        var all = MathJax.Hub.getAllJax(), i;
+        for(i=0; i < all.length; i += 1) {
+            all[i].SourceElement().parentNode.className += ' has-jax';
+        }
+    });
+</script>
+
+<script src="https://www.zybuluo.com/static/MathJax/MathJax.js?config=TeX-AMS-MML_HTMLorMML"></script>
+</script>
+
+
+  
+    <!-- Go to www.addthis.com/dashboard to customize your tools -->
+    <script type="text/javascript" src="//s7.addthis.com/js/300/addthis_widget.js#pubid=ra-59a3e3079f1b7ad5"></script> 
+  
+
+</body>
+</html>
